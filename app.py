@@ -4,7 +4,6 @@ import requests
 import io
 import fitz  # PyMuPDF
 import pytesseract
-from pytesseract import Output
 from PIL import Image
 from pdf2image import convert_from_bytes
 
@@ -13,12 +12,12 @@ API_KEY = "AIzaSyD9vUeUeJEXAMPLEKEY"
 CX = "cse-matteo-123456"
 
 st.set_page_config(page_title="Ricerca Bilanci Aziendali", layout="centered")
-
 st.title("Ricerca Bilanci Aziendali")
 
 uploaded_file = st.file_uploader("Carica il file Excel con Ragione Sociale, P.IVA e Gruppo", type=["xlsx"])
 anno_esercizio = st.selectbox("Seleziona l'anno di esercizio", options=[str(a) for a in range(2015, 2026)])
 parole_chiave = st.text_input("Inserisci parole chiave per la ricerca (separate da virgola)")
+parole_opzionali = st.text_input("Parole opzionali (non obbligatorie) nella ricerca (separate da virgola)")
 
 if st.button("Avvia Ricerca"):
     if uploaded_file is None:
@@ -34,7 +33,11 @@ if st.button("Avvia Ricerca"):
             partita_iva = str(row.get("P.IVA", ""))
             gruppo = str(row.get("Gruppo", ""))
 
-            query = f"{ragione_sociale} bilancio {anno_esercizio} {parole_chiave} filetype:pdf"
+            query = f"{ragione_sociale} bilancio {anno_esercizio} {parole_chiave}"
+            if parole_opzionali.strip():
+                query += f" {parole_opzionali}"
+            query += " filetype:pdf"
+
             url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CX}"
 
             try:
@@ -68,7 +71,6 @@ if st.button("Avvia Ricerca"):
                 risultati.append(f"Errore: {str(e)}")
 
         df["Risultato Ricerca"] = risultati
-
         output_path = "risultati_bilanci.xlsx"
         df.to_excel(output_path, index=False)
         st.success("Ricerca completata. File aggiornato pronto per il download.")
