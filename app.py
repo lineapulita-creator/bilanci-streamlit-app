@@ -32,8 +32,8 @@ if st.button("Avvia Ricerca"):
     else:
         risultati = []
         for index, row in df.iterrows():
-            ragione_sociale = str(row.get("Ragione Sociale", ""))
-            gruppo = str(row.get("Gruppo", ""))
+            ragione_sociale = str(row.get("Legal Entity Name", ""))
+            gruppo = str(row.get("Parent/Group Company", ""))
             query_base = f"{ragione_sociale} {gruppo} bilancio {anno_esercizio}"
             query_parole = " ".join(parole_chiave.split(","))
             query_opzionali = " ".join(parole_opzionali.split(",")) if parole_opzionali.strip() else ""
@@ -73,7 +73,7 @@ if st.button("Avvia Ricerca"):
 
         df["Risultato Ricerca"] = risultati
         st.subheader("Anteprima dei risultati")
-        st.dataframe(df[["Ragione Sociale", "Gruppo", "Risultato Ricerca"]])
+        st.dataframe(df[["Legal Entity Name", "Parent/Group Company", "Risultato Ricerca"]])
 
         output_path = "risultati_bilanci.xlsx"
         df.to_excel(output_path, index=False)
