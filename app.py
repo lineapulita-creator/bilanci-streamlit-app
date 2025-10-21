@@ -37,7 +37,7 @@ if st.button("Avvia Ricerca"):
         chiavi = [x.strip() for x in parole_chiave.split("\n") if x.strip()]
         opzionali = [x.strip() for x in parole_opzionali.split("\n") if x.strip()]
         risultati = []
-        query_usate = []
+        query_finali = []
 
         for _, row in df.iterrows():
             nome = pulisci_nome(str(row.get("Legal Entity Name", "")))
@@ -54,9 +54,10 @@ if st.button("Avvia Ricerca"):
                     tentativi.append(f"{nome} {gruppo} bilancio {anno_esercizio} {chiave} {opz} filetype:pdf")
 
             trovato = False
+            query_usata = ""
             for query in tentativi:
                 url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CX}"
-                query_usate.append(query)
+                query_usata = query
                 try:
                     resp = requests.get(url)
                     items = resp.json().get("items", [])
@@ -80,9 +81,10 @@ if st.button("Avvia Ricerca"):
                     break
             if not trovato:
                 risultati.append("Nessun PDF trovato")
+            query_finali.append(query_usata)
 
         df["Risultato Ricerca"] = risultati
-        df["Query Usata"] = query_usate
+        df["Query Usata"] = query_finali
 
         st.subheader("Anteprima dei risultati")
         st.dataframe(df[["Legal Entity Name", "Parent/Group Company", "Risultato Ricerca", "Query Usata"]])
