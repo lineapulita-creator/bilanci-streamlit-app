@@ -6,6 +6,7 @@ import fitz  # PyMuPDF
 import pytesseract
 from PIL import Image
 from pdf2image import convert_from_bytes
+import re
 
 # API Key e CX forniti da Matteo
 API_KEY = "AIzaSyD9vUeUeJEXAMPLEKEY"
@@ -14,10 +15,15 @@ CX = "cse-matteo-123456"
 st.set_page_config(page_title="Ricerca Bilanci Aziendali", layout="centered")
 st.title("Ricerca Bilanci Aziendali")
 
-uploaded_file = st.file_uploader("Carica il file Excel con Ragione Sociale, P.IVA e Gruppo", type=["xlsx"])
+uploaded_file = st.file_uploader("Carica il file Excel con Legal Entity Name e Parent/Group Company", type=["xlsx"])
 anno_esercizio = st.selectbox("Seleziona l'anno di esercizio", options=[str(a) for a in range(2015, 2026)])
-parole_chiave = st.text_input("Inserisci parole chiave per la ricerca (separate da virgola)")
-parole_opzionali = st.text_input("Parole opzionali (non obbligatorie) nella ricerca (separate da virgola)")
+parole_chiave = st.text_area("Parole chiave obbligatorie (una per riga)")
+parole_opzionali = st.text_area("Parole opzionali (una per riga)")
+
+# Funzione per pulire i nomi aziendali
+def pulisci_nome(nome):
+    nome = re.sub(r"[^a-zA-Z0-9 ]", "", nome)
+    return nome.strip()
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file, engine="openpyxl")
@@ -25,55 +31,61 @@ if uploaded_file:
     st.dataframe(df.head())
 
 if st.button("Avvia Ricerca"):
-    if uploaded_file is None:
-        st.error("Devi caricare un file Excel prima di procedere.")
-    elif parole_chiave.strip() == "":
-        st.error("Inserisci almeno una parola chiave per la ricerca.")
+    if uploaded_file is None or parole_chiave.strip() == "":
+        st.error("Carica un file Excel e inserisci almeno una parola chiave obbligatoria.")
     else:
+        chiavi = [x.strip() for x in parole_chiave.split("\n") if x.strip()]
+        opzionali = [x.strip() for x in parole_opzionali.split("\n") if x.strip()]
         risultati = []
-        for index, row in df.iterrows():
-            ragione_sociale = str(row.get("Legal Entity Name", ""))
-            gruppo = str(row.get("Parent/Group Company", ""))
-            query_base = f"{ragione_sociale} {gruppo} bilancio {anno_esercizio}"
-            query_parole = " ".join(parole_chiave.split(","))
-            query_opzionali = " ".join(parole_opzionali.split(",")) if parole_opzionali.strip() else ""
-            query = f"{query_base} {query_parole} {query_opzionali} filetype:pdf"
+        query_usate = []
 
-            url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CX}"
+        for _, row in df.iterrows():
+            nome = pulisci_nome(str(row.get("Legal Entity Name", "")))
+            gruppo = pulisci_nome(str(row.get("Parent/Group Company", "")))
 
-            try:
-                search_response = requests.get(url)
-                results_json = search_response.json().get("items", [])
-                pdf_url = None
-                for item in results_json:
-                    link = item.get("link", "")
-                    if link.lower().endswith(".pdf"):
-                        pdf_url = link
-                        break
+            tentativi = []
+            for chiave in chiavi:
+                tentativi.append(f"{nome} bilancio {anno_esercizio} {chiave} filetype:pdf")
+                tentativi.append(f"{gruppo} bilancio {anno_esercizio} {chiave} filetype:pdf")
+                tentativi.append(f"{nome} {gruppo} bilancio {anno_esercizio} {chiave} filetype:pdf")
+                for opz in opzionali:
+                    tentativi.append(f"{nome} bilancio {anno_esercizio} {chiave} {opz} filetype:pdf")
+                    tentativi.append(f"{gruppo} bilancio {anno_esercizio} {chiave} {opz} filetype:pdf")
+                    tentativi.append(f"{nome} {gruppo} bilancio {anno_esercizio} {chiave} {opz} filetype:pdf")
 
-                if pdf_url:
-                    pdf_response = requests.get(pdf_url)
-                    if pdf_response.status_code == 200:
-                        images = convert_from_bytes(pdf_response.content)
-                        testo_estratto = ""
-                        for img in images:
-                            ocr_result = pytesseract.image_to_string(img, config="--psm 6")
-                            testo_estratto += ocr_result + "\n"
-
-                        if any(kw.lower() in testo_estratto.lower() for kw in parole_chiave.split(",")):
-                            risultati.append("Bilancio trovato e analizzato")
-                        else:
-                            risultati.append("PDF trovato ma dati non rilevabili")
-                    else:
-                        risultati.append("PDF non scaricabile")
-                else:
-                    risultati.append("Nessun PDF trovato")
-            except Exception as e:
-                risultati.append(f"Errore: {str(e)}")
+            trovato = False
+            for query in tentativi:
+                url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CX}"
+                query_usate.append(query)
+                try:
+                    resp = requests.get(url)
+                    items = resp.json().get("items", [])
+                    pdf_url = next((i["link"] for i in items if ".pdf" in i["link"].lower()), None)
+                    if pdf_url:
+                        pdf_resp = requests.get(pdf_url)
+                        if pdf_resp.status_code == 200:
+                            images = convert_from_bytes(pdf_resp.content)
+                            testo = ""
+                            for img in images:
+                                testo += pytesseract.image_to_string(img, config="--psm 6") + "\n"
+                            if any(k.lower() in testo.lower() for k in chiavi):
+                                risultati.append("Bilancio trovato e analizzato")
+                            else:
+                                risultati.append("PDF trovato ma dati non rilevabili")
+                            trovato = True
+                            break
+                except Exception as e:
+                    risultati.append(f"Errore: {str(e)}")
+                    trovato = True
+                    break
+            if not trovato:
+                risultati.append("Nessun PDF trovato")
 
         df["Risultato Ricerca"] = risultati
+        df["Query Usata"] = query_usate
+
         st.subheader("Anteprima dei risultati")
-        st.dataframe(df[["Legal Entity Name", "Parent/Group Company", "Risultato Ricerca"]])
+        st.dataframe(df[["Legal Entity Name", "Parent/Group Company", "Risultato Ricerca", "Query Usata"]])
 
         output_path = "risultati_bilanci.xlsx"
         df.to_excel(output_path, index=False)
