@@ -7,6 +7,7 @@ import pytesseract
 from PIL import Image
 from pdf2image import convert_from_bytes
 import re
+from bs4 import BeautifulSoup
 
 # API Key e CX forniti da Matteo
 API_KEY = "AIzaSyD9vUeUeJEXAMPLEKEY"
@@ -23,6 +24,15 @@ parole_opzionali = st.text_area("Parole opzionali (una per riga)")
 def pulisci_nome(nome):
     nome = re.sub(r"[^a-zA-Z0-9 ]", "", nome)
     return nome.strip()
+
+def trova_pdf_in_html(url):
+    try:
+        html = requests.get(url, timeout=10).text
+        soup = BeautifulSoup(html, "html.parser")
+        links = [a.get("href") for a in soup.find_all("a") if a.get("href") and ".pdf" in a.get("href").lower()]
+        return links
+    except:
+        return []
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file, engine="openpyxl")
@@ -42,7 +52,7 @@ if st.button("Avvia Ricerca"):
 
         for _, row in df.iterrows():
             gruppo = pulisci_nome(str(row.get("Parent/Group Company", "")))
-            query = f"\"{gruppo} bilancio {anno_esercizio}\" filetype:pdf"
+            query = f"{gruppo} bilancio {anno_esercizio}"
             url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CX}"
             query_usata = query
             pdf_link = "Nessun link disponibile"
@@ -51,30 +61,32 @@ if st.button("Avvia Ricerca"):
             try:
                 resp = requests.get(url)
                 items = resp.json().get("items", [])
-                pdf_url = next((i["link"] for i in items if ".pdf" in i["link"].lower()), None)
-                if pdf_url:
-                    pdf_link = pdf_url
-                    pdf_resp = requests.get(pdf_url)
-                    if pdf_resp.status_code == 200:
-                        images = convert_from_bytes(pdf_resp.content)
-                        testo = ""
-                        for img in images:
-                            testo += pytesseract.image_to_string(img, config="--psm 6") + "\n"
-                        if all(k.lower() in testo.lower() for k in tutte_le_parole):
-                            risultati.append("Bilancio trovato e analizzato")
-                        else:
-                            risultati.append("PDF trovato ma parole non rilevate")
-                        trovato = True
+                for item in items:
+                    pagina_url = item.get("link")
+                    pdf_links = trova_pdf_in_html(pagina_url)
+                    for pdf_url in pdf_links:
+                        pdf_resp = requests.get(pdf_url)
+                        if pdf_resp.status_code == 200:
+                            images = convert_from_bytes(pdf_resp.content)
+                            testo = ""
+                            for img in images:
+                                testo += pytesseract.image_to_string(img, config="--psm 6") + "\n"
+                            if all(k.lower() in testo.lower() for k in tutte_le_parole):
+                                risultati.append("Bilancio trovato e analizzato")
+                                query_finali.append(query_usata)
+                                link_finali.append(pdf_url)
+                                trovato = True
+                                break
+                    if trovato:
+                        break
+                if not trovato:
+                    risultati.append("Nessun PDF rilevante trovato")
+                    query_finali.append(query_usata)
+                    link_finali.append("Nessun link disponibile")
             except Exception as e:
                 risultati.append(f"Errore: {str(e)}")
-                pdf_link = "Errore durante la ricerca"
-                trovato = True
-
-            if not trovato:
-                risultati.append("Nessun PDF trovato")
-
-            query_finali.append(query_usata)
-            link_finali.append(pdf_link)
+                query_finali.append(query_usata)
+                link_finali.append("Errore durante la ricerca")
 
         df["Risultato Ricerca"] = risultati
         df["Query Usata"] = query_finali
