@@ -20,7 +20,6 @@ anno_esercizio = st.selectbox("Seleziona l'anno di esercizio", options=[str(a) f
 parole_chiave = st.text_area("Parole chiave obbligatorie (una per riga)")
 parole_opzionali = st.text_area("Parole opzionali (una per riga)")
 
-# Funzione per pulire i nomi aziendali
 def pulisci_nome(nome):
     nome = re.sub(r"[^a-zA-Z0-9 ]", "", nome)
     return nome.strip()
@@ -38,6 +37,7 @@ if st.button("Avvia Ricerca"):
         opzionali = [x.strip() for x in parole_opzionali.split("\n") if x.strip()]
         risultati = []
         query_finali = []
+        link_finali = []
 
         for _, row in df.iterrows():
             nome = pulisci_nome(str(row.get("Legal Entity Name", "")))
@@ -55,6 +55,7 @@ if st.button("Avvia Ricerca"):
 
             trovato = False
             query_usata = ""
+            pdf_link = "Nessun link disponibile"
             for query in tentativi:
                 url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CX}"
                 query_usata = query
@@ -63,6 +64,7 @@ if st.button("Avvia Ricerca"):
                     items = resp.json().get("items", [])
                     pdf_url = next((i["link"] for i in items if ".pdf" in i["link"].lower()), None)
                     if pdf_url:
+                        pdf_link = pdf_url
                         pdf_resp = requests.get(pdf_url)
                         if pdf_resp.status_code == 200:
                             images = convert_from_bytes(pdf_resp.content)
@@ -77,17 +79,20 @@ if st.button("Avvia Ricerca"):
                             break
                 except Exception as e:
                     risultati.append(f"Errore: {str(e)}")
+                    pdf_link = "Errore durante la ricerca"
                     trovato = True
                     break
             if not trovato:
                 risultati.append("Nessun PDF trovato")
             query_finali.append(query_usata)
+            link_finali.append(pdf_link)
 
         df["Risultato Ricerca"] = risultati
         df["Query Usata"] = query_finali
+        df["Link Trovato"] = link_finali
 
         st.subheader("Anteprima dei risultati")
-        st.dataframe(df[["Legal Entity Name", "Parent/Group Company", "Risultato Ricerca", "Query Usata"]])
+        st.dataframe(df[["Legal Entity Name", "Parent/Group Company", "Risultato Ricerca", "Query Usata", "Link Trovato"]])
 
         output_path = "risultati_bilanci.xlsx"
         df.to_excel(output_path, index=False)
