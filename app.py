@@ -35,55 +35,44 @@ if st.button("Avvia Ricerca"):
     else:
         chiavi = [x.strip() for x in parole_chiave.split("\n") if x.strip()]
         opzionali = [x.strip() for x in parole_opzionali.split("\n") if x.strip()]
+        tutte_le_parole = chiavi + opzionali
         risultati = []
         query_finali = []
         link_finali = []
 
         for _, row in df.iterrows():
-            nome = pulisci_nome(str(row.get("Legal Entity Name", "")))
             gruppo = pulisci_nome(str(row.get("Parent/Group Company", "")))
-
-            tentativi = []
-            for chiave in chiavi:
-                tentativi.append(f"{nome} bilancio {anno_esercizio} {chiave} filetype:pdf")
-                tentativi.append(f"{gruppo} bilancio {anno_esercizio} {chiave} filetype:pdf")
-                tentativi.append(f"{nome} {gruppo} bilancio {anno_esercizio} {chiave} filetype:pdf")
-                for opz in opzionali:
-                    tentativi.append(f"{nome} bilancio {anno_esercizio} {chiave} {opz} filetype:pdf")
-                    tentativi.append(f"{gruppo} bilancio {anno_esercizio} {chiave} {opz} filetype:pdf")
-                    tentativi.append(f"{nome} {gruppo} bilancio {anno_esercizio} {chiave} {opz} filetype:pdf")
-
-            trovato = False
-            query_usata = ""
+            query = f"\"{gruppo} bilancio {anno_esercizio}\" filetype:pdf"
+            url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CX}"
+            query_usata = query
             pdf_link = "Nessun link disponibile"
-            for query in tentativi:
-                url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CX}"
-                query_usata = query
-                try:
-                    resp = requests.get(url)
-                    items = resp.json().get("items", [])
-                    pdf_url = next((i["link"] for i in items if ".pdf" in i["link"].lower()), None)
-                    if pdf_url:
-                        pdf_link = pdf_url
-                        pdf_resp = requests.get(pdf_url)
-                        if pdf_resp.status_code == 200:
-                            images = convert_from_bytes(pdf_resp.content)
-                            testo = ""
-                            for img in images:
-                                testo += pytesseract.image_to_string(img, config="--psm 6") + "\n"
-                            if any(k.lower() in testo.lower() for k in chiavi):
-                                risultati.append("Bilancio trovato e analizzato")
-                            else:
-                                risultati.append("PDF trovato ma dati non rilevabili")
-                            trovato = True
-                            break
-                except Exception as e:
-                    risultati.append(f"Errore: {str(e)}")
-                    pdf_link = "Errore durante la ricerca"
-                    trovato = True
-                    break
+            trovato = False
+
+            try:
+                resp = requests.get(url)
+                items = resp.json().get("items", [])
+                pdf_url = next((i["link"] for i in items if ".pdf" in i["link"].lower()), None)
+                if pdf_url:
+                    pdf_link = pdf_url
+                    pdf_resp = requests.get(pdf_url)
+                    if pdf_resp.status_code == 200:
+                        images = convert_from_bytes(pdf_resp.content)
+                        testo = ""
+                        for img in images:
+                            testo += pytesseract.image_to_string(img, config="--psm 6") + "\n"
+                        if all(k.lower() in testo.lower() for k in tutte_le_parole):
+                            risultati.append("Bilancio trovato e analizzato")
+                        else:
+                            risultati.append("PDF trovato ma parole non rilevate")
+                        trovato = True
+            except Exception as e:
+                risultati.append(f"Errore: {str(e)}")
+                pdf_link = "Errore durante la ricerca"
+                trovato = True
+
             if not trovato:
                 risultati.append("Nessun PDF trovato")
+
             query_finali.append(query_usata)
             link_finali.append(pdf_link)
 
