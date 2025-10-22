@@ -19,3 +19,18 @@ Questa applicazione consente di:
 
 **Non è richiesta alcuna configurazione tecnica.**
 **L’app usa la Google Custom Search API con un limite gratuito di 100 query/giorno.**
+
+## 📄 Nuova funzione: Entrypoint → Crawl → PDF
+
+Questa app ora include una pagina (multi‑page) che usa Google Programmable Search **solo** per trovare la
+**pagina indice** (Investor Relations / Bilanci / Amministrazione Trasparente) nel dominio ufficiale di un’azienda,
+poi esegue un **crawling mirato** dentro il dominio per individuare il **PDF** del bilancio dell’anno selezionato.
+
+### Come si usa (Streamlit Community Cloud)
+1. Assicurati che i pacchetti siano installati (vedi `requirements.txt`).
+2. Imposta le secrets della tua app su **Streamlit Cloud**  
+   (Dashboard app → **Settings** → **Secrets**), in formato TOML:
+   ```toml
+   [google]
+   api_key = "YOUR_GOOGLE_API_KEY"
+   cx      = "YOUR_CSE_CX"
