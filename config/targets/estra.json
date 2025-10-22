@@ -1,0 +1,63 @@
+{
+  "name": "Estra",
+  "base_url": "https://www.estra.it",
+  "seeds": [
+    "/bilanci-relazioni",
+    "/investor-relations"
+  ],
+  "years_target": [2024, 2023],
+  "max_depth": 2,
+  "max_pages": 60,
+  "allowlist_hosts": [
+    "estra.it",
+    "www.estra.it",
+    "ir.estra.it",
+    "investor.estra.it",
+    "static.estra.it",
+    "cdn.estra.it"
+  ],
+  "blacklist_paths_contains": [
+    "/chi-siamo/",
+    "/corporate-governance",
+    "/segnalazioni-whistleblowing",
+    "/risk-management",
+    "/certificazioni",
+    "/rsi"
+  ],
+  "keywords_bilanci": [
+    "bilancio",
+    "bilancio d'esercizio",
+    "relazione finanziaria annuale",
+    "relazione sulla gestione",
+    "nota integrativa",
+    "financial statements",
+    "annual report"
+  ],
+  "keywords_consolidato": [
+    "consolidato",
+    "gruppo",
+    "consolidated"
+  ],
+  "keywords_sostenibilita": [
+    "bilancio di sostenibilita",
+    "sostenibilita",
+    "dichiarazione non finanziaria",
+    "dnf",
+    "sustainability",
+    "esg"
+  ],
+  "pdf_filename_patterns": [
+    "2023",
+    "2024",
+    "bilancio",
+    "relazione",
+    "annual",
+    "financial",
+    "consolidat",
+    "sostenibil",
+    "dnf"
+  ],
+  "follow_pdf_on_external_host": true,
+  "top_n_links": 20,
+  "user_agent": "Mozilla/5.0 (compatible; EstraSemanticCrawler/1.0; +https://www.example.com/bot)"
+}
