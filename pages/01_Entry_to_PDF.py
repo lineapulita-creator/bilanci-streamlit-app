@@ -4,12 +4,12 @@ from crawler import crawl_for_pdf
 
 st.set_page_config(page_title="Entrypoint → Crawl → PDF", page_icon="📄", layout="centered")
 st.title("📄 Bilanci – Entrypoint → Crawl → PDF")
-st.caption("Usa CSE per trovare la pagina indice sul dominio, poi naviga nel sito fino al PDF dell'anno.")
+st.caption("Trova la pagina indice (IR/Bilanci/Trasparenza) e naviga nel dominio fino al PDF dell'anno.")
 
 with st.form("param"):
     company = st.text_input("Ragione sociale", value="Estra")
     year = st.number_input("Anno", min_value=2005, max_value=2028, value=2023, step=1)
-    manual_seed = st.text_input("URL seed (opzionale: pagina 'Bilanci e relazioni' / 'Investor Relations')")
+    manual_seed = st.text_input("URL seed (opzionale: pagina 'Bilanci e Relazioni' / 'Investor Relations')")
     max_depth = st.slider("Profondità massima crawl", 1, 6, 4)
     max_pages = st.slider("Pagine massime da visitare", 10, 120, 50, step=10)
     submitted = st.form_submit_button("Cerca PDF")
@@ -26,11 +26,12 @@ if submitted:
             api_key = st.secrets["google"]["api_key"]
             cx      = st.secrets["google"]["cx"]
         except Exception:
-            st.error("Configura (o verifica) le secrets su Streamlit Cloud: [google.api_key] e [google.cx]")
+            st.error("Configura le secrets in Streamlit Cloud: [google.api_key] e [google.cx] — oppure usa un seed manuale.")
             st.stop()
+
         entrypoints = pick_entrypoints(company, int(year), api_key, cx, max_sites=5)
         if not entrypoints:
-            st.error("La CSE non ha restituito entrypoint utili. Prova con un seed manuale.")
+            st.error("La CSE non ha restituito entrypoint utili. Prova un seed manuale.")
             st.stop()
         with st.expander("🔎 Entrypoint trovati via CSE"):
             for u in entrypoints:
@@ -44,7 +45,7 @@ if submitted:
     if res.get("pdf"):
         st.success(f"✅ PDF trovato ({res['score']:.2f}) via {res['via']} — pagine visitate: {res['visited']}")
         st.code(res["pdf"], language="text")
-        st.caption("Ora puoi incollare questo URL nel tuo flusso OCR/Excel.")
+        st.caption("Copia l'URL: puoi usarlo nel tuo flusso OCR/Excel.")
     else:
         st.warning(f"⚠️ Nessun PDF trovato entro i limiti (visitato: {res.get('visited')}).")
-        st.caption("Suggerimenti: usa come seed la pagina 'Bilanci e Relazioni' dell'anno, oppure aumenta profondità/pagine.")
+        st.caption("Suggerimenti: incolla la pagina 'Bilanci e Relazioni' come seed oppure aumenta profondità/pagine.")
