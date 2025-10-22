@@ -14,3 +14,9 @@ lxml==5.3.0
 selectolax==0.3.21
 urllib3==2.2.3
 chardet==5.2.0
+pydantic>=2.8
+rapidfuzz>=3.9
+streamlit>=1.37
+tqdm>=4.66
+certifi>=2024.7.4
+idna>=3.7
