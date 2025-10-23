@@ -2,3 +2,4 @@
 headless = true
 enableCORS = false
 port = 8501
+[google_api] key = "AIzaSyDM2R4GN2NsxKXAKAk-wjq87yB0YgJeSQj4" cx = "869644a1dedc5462c"
