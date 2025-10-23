@@ -1,18 +1,25 @@
 # app.py
 # ============================================
 # Streamlit App – Crawler semantico (Estra)
-# Tutto-in-uno, pronto da incollare
+# Versione adattata per usare Secrets e workaround watchdog
 # ============================================
 
 import os
+
+# WORKAROUND: evita l'errore "inotify watch limit reached" su alcuni hosting
+# Impostiamo il mode del watchdog a "poll" prima di importare streamlit
+os.environ.setdefault("STREAMLIT_WATCHDOG_MODE", "poll")
+
 import io
 import time
-import math
+import re
 import json
 from collections import deque
 from typing import Optional, List, Dict, Any, Set, Tuple
 from urllib.parse import urljoin, urlparse
+from urllib import robotparser
 
+# Import Streamlit e pandas dopo aver impostato la variabile d'ambiente
 import streamlit as st
 import pandas as pd
 
@@ -62,30 +69,24 @@ try:
     import tomllib  # py3.11+
 except Exception:
     try:
-        import tomli as tomllib  # pip install tomli
+        import tomli as tomllib  # pip install tomli if available
     except Exception:
         tomllib = None
-
-# robots parser
-from urllib import robotparser
 
 # --------------------------------------------
 # Config generale
 # --------------------------------------------
 APP_TITLE = "Bilanci & DNF – Crawler semantico (Estra)"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 # User-Agent chiaro e con riferimento di contatto (aiuta a non essere bloccati)
-DEFAULT_UA = (
-    "BilanciCrawler/1.0 (+https://github.com/lineapulita-creator) "
-    "Mozilla/5.0 (compatible;)"
-)
+DEFAULT_UA = "BilanciCrawler/1.0 (+https://github.com/lineapulita-creator) Mozilla/5.0 (compatible;)"
 
 st.set_page_config(page_title=APP_TITLE, page_icon="🔎", layout="wide")
 
 
 # --------------------------------------------
 # Helpers per leggere la config di ricerca
-# (si aspetta streamlit/config.toml con google_api.key e google_api.cx)
+# load_search_config legge streamlit/config.toml se esiste (ma preferiamo usare Secrets)
 # --------------------------------------------
 def load_search_config() -> Dict[str, str]:
     cfg = {}
@@ -96,21 +97,19 @@ def load_search_config() -> Dict[str, str]:
                 with open(cfg_path, "rb") as f:
                     data = tomllib.load(f)
             else:
-                # semplice parser manuale: cerca le righe key = "value"
                 data = {}
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     for line in f:
-                        if "=" in line:
+                        if "=" in line and not line.strip().startswith("#"):
                             k, v = line.split("=", 1)
                             k = k.strip()
                             v = v.strip().strip('"').strip("'")
                             data[k] = v
             # support nested table like [google_api]
             if "google_api" in data and isinstance(data["google_api"], dict):
-                cfg["api_key"] = data["google_api"].get("key") or data["google_api"].get("api_key") or data["google_api"].get("key")
+                cfg["api_key"] = data["google_api"].get("key") or data["google_api"].get("api_key")
                 cfg["cx"] = data["google_api"].get("cx")
             else:
-                # try direct keys
                 cfg["api_key"] = data.get("google_api.key") or data.get("google_api_key") or data.get("api_key") or data.get("key")
                 cfg["cx"] = data.get("google_api.cx") or data.get("google_cx") or data.get("cx")
         except Exception:
@@ -141,7 +140,7 @@ def search_google_cse(query: str, api_key: str, cx: str, num: int = 5, timeout: 
 
 
 # --------------------------------------------
-# Helpers per pdf: download e estrazione testo (include OCR)
+# Helpers per pdf: download, estrazione testo (include OCR)
 # --------------------------------------------
 def download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
     if httpx is None:
@@ -159,7 +158,7 @@ def download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
 def ocr_pdf_bytes(data: bytes, dpi: int = 200, lang: str = "ita") -> str:
     """
     Converte le pagine PDF in immagini (pdf2image) e esegue pytesseract OCR.
-    Restituisce il testo concatenato. Richiede poppler (system) e tesseract disponibile.
+    Restituisce il testo concatenato. Richiede poppler e tesseract installati a livello di sistema.
     """
     if convert_from_bytes is None or pytesseract is None:
         return ""
@@ -182,7 +181,6 @@ def extract_text_from_pdf_bytes(data: bytes) -> Tuple[str, bool]:
     Ritorna (text, needs_ocr_bool).
     Usa pdfplumber se disponibile, altrimenti PyPDF2 come fallback.
     Se non riesce a estrarre testo restituisce ('', True).
-    Se OCR possibile, caller può usare ocr_pdf_bytes.
     """
     if not data:
         return "", False
@@ -223,16 +221,12 @@ def extract_text_from_pdf_bytes(data: bytes) -> Tuple[str, bool]:
 # --------------------------------------------
 # Utilità per trovare valori vicino alla keyword
 # --------------------------------------------
-import re
-
 NUMBER_RE = re.compile(r"[-+]?\d[\d\.\,\s]*\d(?:\s*(?:€|EUR|eur)?)?")
 
 def normalize_number_str(s: str) -> str:
     s = s.strip()
     s = s.replace("\u00a0", " ")
-    # remove spaces in thousands, but keep decimal separators
     s = s.replace(" ", "")
-    # If contains both comma and dot, guess thousand separator
     if "," in s and "." in s:
         if s.rfind(",") > s.rfind("."):
             s = s.replace(".", "")
@@ -317,7 +311,7 @@ def polite_get(client: "httpx.Client", url: str, min_delay: float = 0.8) -> "htt
 
 
 # --------------------------------------------
-# Adapter / Fallback crawler (semplificato)
+# Adapter / Fallback crawler
 # --------------------------------------------
 def _is_pdf_url(url: str) -> bool:
     u = url.lower()
@@ -515,13 +509,12 @@ with st.sidebar:
     if pdfplumber is None and PdfReader is None:
         missing.append("pdfplumber or PyPDF2 for PDF text extraction")
     if pytesseract is None or convert_from_bytes is None:
-        # OCR libs optional: inform user if not installed
-        missing.append("pytesseract and pdf2image (for OCR) - requires system packages")
+        missing.append("pytesseract and pdf2image (for OCR) - requires system packages (tesseract, poppler)")
     if missing:
         st.error("Mancano dipendenze: **" + ", ".join(missing) + "**")
 
     st.divider()
-    st.markdown("**Suggerimento**: usa come seed la pagina *Bilanci e DNF* o *Investor Relations*.")
+    st.markdown("**Suggerimento**: usa la modalità gentile, e metti le chiavi Google nelle Secrets di Streamlit (GOOGLE_API_KEY, GOOGLE_CX).")
 
 
 # ==============================
@@ -530,7 +523,6 @@ with st.sidebar:
 with st.expander("🔎 Crawler semantico – Estra (scan singolo)", expanded=False):
     st.markdown("Configura i parametri e lancia la scansione per *Bilanci e DNF*.")
 
-    # --- Parametri base ---
     col1, col2 = st.columns([2, 1])
     with col1:
         seed_url = st.text_input(
@@ -560,7 +552,6 @@ with st.expander("🔎 Crawler semantico – Estra (scan singolo)", expanded=Fal
     )
     keywords = [k.strip() for k in keywords_raw.splitlines() if k.strip()]
 
-    # --- Parametri crawler ---
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
         depth_max = st.number_input("Profondità max", min_value=1, max_value=6, value=1, step=1)
@@ -646,14 +637,14 @@ Per ogni riga: il sistema esegue una query Google Custom Search del tipo `Nome A
     max_companies = st.number_input("Numero massimo di aziende da processare in questo run", min_value=1, max_value=1000, value=20, step=1)
     run_batch = st.button("▶️ Processa elenco e genera Excel aggiornato")
 
-    # carica config google dal file streamlit/config.toml se presente
-    search_cfg = load_search_config()
-    api_key = search_cfg.get("api_key")
-    cx = search_cfg.get("cx")
+    # carica config google: preferiamo Secrets/ENV, fallback a streamlit/config.toml se presente
+    cfg = load_search_config()
+    api_key = os.environ.get("GOOGLE_API_KEY") or cfg.get("api_key")
+    cx = os.environ.get("GOOGLE_CX") or cfg.get("cx")
     if not api_key or not cx:
-        st.warning("Google Custom Search API key o CX non trovati in streamlit/config.toml. Inseriscili o verifica il file. Senza questi il batch non può cercare automaticamente i risultati SERP.")
+        st.warning("Google Custom Search API key o CX non trovati nei Secrets/ENV né in streamlit/config.toml. Inseriscili nei Secrets (raccomandato) o nel file streamlit/config.toml.")
     else:
-        st.info("Google Custom Search configurato (usa valori in streamlit/config.toml). Quota giornaliera: ricorda il limite di query.")
+        st.info("Google Custom Search configurato (valore preso da Secrets/ENV o streamlit/config.toml). Controlla la quota giornaliera (es. 100 query/giorno).")
 
     if run_batch:
         if uploaded is None:
@@ -667,7 +658,7 @@ Per ogni riga: il sistema esegue una query Google Custom Search del tipo `Nome A
         if ex_col_name not in df_in.columns:
             st.error(f"Colonna '{ex_col_name}' non trovata nel file Excel. Colonne disponibili: {', '.join(df_in.columns.astype(str))}")
             st.stop()
-        # Limita il numero di righe processate in questo run
+
         df_proc = df_in.copy()
         n_rows = min(int(max_companies), len(df_proc))
         st.info(f"Avvio processamento su {n_rows} aziende (limite impostato).")
@@ -809,9 +800,10 @@ Per ogni riga: il sistema esegue una query Google Custom Search del tipo `Nome A
 with st.expander("ℹ️ Informazioni / Note"):
     st.markdown(
         """
-- Questa app utilizza Google Custom Search API per ottenere i primi link SERP; assicurati di avere inserito la API key e CX in streamlit/config.toml o nei Secrets di Streamlit.
-- Per PDF testuali viene usato pdfplumber o PyPDF2 per estrarre testo; per PDF scannerizzati viene usato pytesseract+pdf2image (OCR). OCR richiede pacchetti di sistema: `tesseract-ocr` e `poppler-utils`.
-- Mantieni la Modalità Gentile attiva per evitare blocchi (robots.txt e delay).
-- Per grandi volumi considera caching delle SERP e esecuzione in batch più piccoli.
+- Questa app usa la Google Custom Search API per ottenere i link SERP: metti le chiavi nei Secrets di Streamlit (Settings -> Secrets) con i nomi GOOGLE_API_KEY e GOOGLE_CX.
+- Il file streamlit/config.toml non dovrebbe contenere le chiavi in chiaro: rimuovile e usa i Secrets.
+- Per OCR servono pacchetti di sistema (tesseract-ocr e poppler-utils) — li abbiamo elencati in packages.txt.
+- La modalità watchdog è impostata a "poll" di default per evitare l'errore inotify su alcuni host.
+- Testa sempre con 1-3 aziende per esecuzioni iniziali per non consumare la quota SERP.
         """
     )
