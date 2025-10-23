@@ -24,7 +24,12 @@ tenacity==8.5.0
 # PDF & imaging
 PyMuPDF==1.24.9
 Pillow>=10.4.0
-# ATTENZIONE: Non includere pdf2image/pytesseract in cloud; richiedono binari di sistema
+
+# PDF text extraction and OCR (required by app.py)
+pdfplumber>=0.9.0
+PyPDF2>=3.0.0
+pdf2image>=1.16.0
+pytesseract>=0.3.10
 
 # Semantica / fuzzy match
 pydantic>=2.8.0
