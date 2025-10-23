@@ -13,6 +13,7 @@ import math
 import asyncio
 from collections import deque
 from urllib.parse import urljoin, urlparse
+from urllib import robotparser
 from typing import Optional, List, Dict, Any, Set
 
 import streamlit as st
@@ -43,16 +44,74 @@ except Exception:
 # --------------------------------------------
 APP_TITLE = "Bilanci & DNF – Crawler semantico (Estra)"
 APP_VERSION = "1.0.0"
+# User-Agent chiaro e con riferimento di contatto (aiuta a non essere bloccati)
 DEFAULT_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "BilanciCrawler/1.0 (+https://github.com/lineapulita-creator) "
+    "Mozilla/5.0 (compatible;)"
 )
 
 st.set_page_config(page_title=APP_TITLE, page_icon="🔎", layout="wide")
 
 
 # --------------------------------------------
-# Utilità
+# Utilità per politeness e robots.txt
+# --------------------------------------------
+_robot_parsers: Dict[str, Optional[robotparser.RobotFileParser]] = {}
+_last_request_time: Dict[str, float] = {}
+
+
+def _get_host(url: str) -> str:
+    try:
+        return urlparse(url).netloc or ""
+    except Exception:
+        return ""
+
+
+def allowed_by_robots(url: str, user_agent: str = "*") -> bool:
+    """
+    Controlla robots.txt per l'host e ritorna True se è consentito fare fetch.
+    Se robots.txt non è leggibile, assume permissivo (per non bloccare troppo facilmente).
+    """
+    host = _get_host(url)
+    if not host:
+        return False
+    rp = _robot_parsers.get(host)
+    if rp is None:
+        robots_url = f"{urlparse(url).scheme}://{host}/robots.txt"
+        rp = robotparser.RobotFileParser()
+        try:
+            rp.set_url(robots_url)
+            rp.read()
+        except Exception:
+            # se fallisce la lettura, memorizziamo None per indicare "unknown" e assumiamo permissivo
+            _robot_parsers[host] = None
+            return True
+        _robot_parsers[host] = rp
+    if _robot_parsers.get(host) is None:
+        return True
+    try:
+        return _robot_parsers[host].can_fetch(user_agent, url)
+    except Exception:
+        return True
+
+
+def polite_get(client: "httpx.Client", url: str, min_delay: float = 0.8) -> "httpx.Response":
+    """
+    Esegue una GET rispettando un delay minimo tra richieste allo stesso host.
+    """
+    host = _get_host(url)
+    now = time.time()
+    last = _last_request_time.get(host, 0.0)
+    wait = max(0.0, min_delay - (now - last))
+    if wait > 0:
+        time.sleep(wait)
+    resp = client.get(url)
+    _last_request_time[host] = time.time()
+    return resp
+
+
+# --------------------------------------------
+# Utilità generali
 # --------------------------------------------
 def _dep_missing() -> List[str]:
     """Ritorna lista di dipendenze mancanti per il fallback crawler."""
@@ -146,12 +205,14 @@ def _fallback_crawl_and_classify(
     seed_url: str,
     keywords: List[str],
     year: int,
-    depth: int = 2,
-    max_pages: int = 80,
+    depth: int = 1,
+    max_pages: int = 20,
     allowlist: Optional[List[str]] = None,
+    polite_mode: bool = True,
+    min_delay: float = 1.0,
 ) -> List[Dict[str, Any]]:
     """
-    Crawler sincrono semplice (httpx + bs4).
+    Crawler sincrono semplice (httpx + bs4), con opzioni di polite-mode.
     Ritorna lista di dict:
     {
         "url": str,
@@ -178,6 +239,10 @@ def _fallback_crawl_and_classify(
 
     allow = _norm_allowlist(seed_url, allowlist)
 
+    # reset host request times for a fresh run
+    global _last_request_time
+    _last_request_time = {}
+
     with httpx.Client(follow_redirects=True, headers=headers, timeout=15.0) as client:
         while q and pages_processed < max_pages:
             url, d, source = q.popleft()
@@ -185,12 +250,20 @@ def _fallback_crawl_and_classify(
                 continue
             visited.add(url)
 
-            # Filtra host
+            # Filtra host rispetto alla allowlist
             if not _is_allowed(url, allow):
                 continue
 
+            # Se polite_mode attivo, rispetta robots.txt
+            if polite_mode and not allowed_by_robots(url, DEFAULT_UA):
+                # salta la URL se non consentita
+                continue
+
             try:
-                r = client.get(url)
+                if polite_mode:
+                    r = polite_get(client, url, min_delay=min_delay)
+                else:
+                    r = client.get(url)
             except Exception:
                 continue
             ctype = r.headers.get("content-type", "").lower()
@@ -252,8 +325,13 @@ def _fallback_crawl_and_classify(
             # Estrai link
             for a in soup.find_all("a", href=True):
                 href = a.get("href")
-                nxt = urljoin(url, href)
+                try:
+                    nxt = urljoin(url, href)
+                except Exception:
+                    continue
                 # Filtri rapidi
+                if not nxt:
+                    continue
                 if nxt.startswith("mailto:") or nxt.startswith("tel:"):
                     continue
                 if not nxt.startswith("http"):
@@ -262,6 +340,9 @@ def _fallback_crawl_and_classify(
                     continue
                 # Restringi crawling
                 if not _is_allowed(nxt, allow):
+                    continue
+                # Se polite_mode, verifica robots per il link prima di inserirlo in coda
+                if polite_mode and not allowed_by_robots(nxt, DEFAULT_UA):
                     continue
 
                 # Inserisci in coda
@@ -289,20 +370,36 @@ def crawl_and_classify(
     seed_url: str,
     keywords: List[str],
     year: int,
-    depth: int = 2,
-    max_pages: int = 80,
+    depth: int = 1,
+    max_pages: int = 20,
     allowlist: Optional[List[str]] = None,
+    polite_mode: bool = True,
+    min_delay: float = 1.0,
 ) -> List[Dict[str, Any]]:
     """Usa il modulo esterno se disponibile, altrimenti il fallback."""
     if _CRAWLER_IMPORTED:
-        return _external_crawl_and_classify(
-            seed_url=seed_url,
-            keywords=keywords,
-            year=year,
-            depth=depth,
-            max_pages=max_pages,
-            allowlist=allowlist,
-        )
+        # Se il modulo esterno supporta queste opzioni, passale; altrimenti questo adapter rimane un thin wrapper.
+        try:
+            return _external_crawl_and_classify(
+                seed_url=seed_url,
+                keywords=keywords,
+                year=year,
+                depth=depth,
+                max_pages=max_pages,
+                allowlist=allowlist,
+                polite_mode=polite_mode,
+                min_delay=min_delay,
+            )
+        except TypeError:
+            # Se il modulo esterno non accetta polite_mode/min_delay, chiamiamo con argomenti originali
+            return _external_crawl_and_classify(
+                seed_url=seed_url,
+                keywords=keywords,
+                year=year,
+                depth=depth,
+                max_pages=max_pages,
+                allowlist=allowlist,
+            )
     return _fallback_crawl_and_classify(
         seed_url=seed_url,
         keywords=keywords,
@@ -310,6 +407,8 @@ def crawl_and_classify(
         depth=depth,
         max_pages=max_pages,
         allowlist=allowlist,
+        polite_mode=polite_mode,
+        min_delay=min_delay,
     )
 
 
@@ -375,9 +474,10 @@ with st.expander("🔎 Crawler semantico – Estra", expanded=True):
     # --- Parametri crawler ---
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
-        depth_max = st.number_input("Profondità max", min_value=1, max_value=6, value=2, step=1)
+        # valori di default ridotti per comportamento più 'gentile'
+        depth_max = st.number_input("Profondità max", min_value=1, max_value=6, value=1, step=1)
     with c2:
-        pages_max = st.number_input("Pagine max", min_value=10, max_value=500, value=80, step=10)
+        pages_max = st.number_input("Pagine max", min_value=5, max_value=500, value=20, step=5)
     with c3:
         allowlist_raw = st.text_input(
             "Domini/host consentiti (separati da virgola)",
@@ -385,6 +485,13 @@ with st.expander("🔎 Crawler semantico – Estra", expanded=True):
             help="Se vuoto, si usa il dominio della seed. I sottodomini sono ammessi automaticamente."
         )
     allowlist = [h.strip() for h in allowlist_raw.split(",") if h.strip()]
+
+    # Options per politeness
+    polite_col1, polite_col2 = st.columns([2, 1])
+    with polite_col1:
+        polite_mode = st.checkbox("Modalità gentile (rispetta robots.txt e applica delay)", value=True, help="Se attivo il crawler rispetta robots.txt e applica un ritardo tra le richieste.")
+    with polite_col2:
+        min_delay = st.slider("Delay minimo (s)", min_value=0.2, max_value=5.0, value=1.0, step=0.1, help="Minimo tempo tra richieste allo stesso host quando 'Modalità gentile' è attiva.")
 
     fmt = st.radio("Formato esportazione", ["CSV", "JSON"], horizontal=True, index=0)
 
@@ -411,7 +518,7 @@ with st.expander("🔎 Crawler semantico – Estra", expanded=True):
                 )
                 st.stop()
 
-        status.info("In esecuzione… può richiedere alcuni minuti su siti complessi.")
+        status.info("In esecuzione… può richiedere alcuni minuti su siti complessi. In modalità gentile verranno rispettati robots.txt e delay tra richieste.")
 
         try:
             results = crawl_and_classify(
@@ -421,6 +528,8 @@ with st.expander("🔎 Crawler semantico – Estra", expanded=True):
                 depth=int(depth_max),
                 max_pages=int(pages_max),
                 allowlist=allowlist if allowlist else None,
+                polite_mode=bool(polite_mode),
+                min_delay=float(min_delay),
             )
 
             if not results:
@@ -467,6 +576,8 @@ with st.expander("🔎 Crawler semantico – Estra", expanded=True):
                         )
                 if "is_pdf" in df.columns and df["is_pdf"].sum() == 0:
                     tips.append("Nessun PDF diretto. Aumenta **Profondità** o verifica PDF su CDN esterni.")
+                if polite_mode:
+                    tips.append("Modalità gentile attiva: il crawler rispetta robots.txt e applica delay tra le richieste.")
                 if tips:
                     st.info("Suggerimenti:\n\n- " + "\n- ".join(tips))
 
@@ -486,6 +597,7 @@ with st.expander("ℹ️ Informazioni / Note"):
 - Questa sezione esegue un crawler semantico partendo da una **Seed URL** (consigliato: *Bilanci e DNF* o *Investor Relations*).
 - Puoi limitare la navigazione ai **domini consentiti** per evitare di uscire dal perimetro.
 - Il punteggio di rilevanza considera **anno**, **keywords**, presenza di **PDF** e path con *bilanci/relazioni/investor/financial*.
+- In modalità gentile il crawler rispetta robots.txt e applica un ritardo minimo tra le richieste per non sovraccaricare i siti.
 - Se possiedi un modulo esterno `semantic_crawler`, la funzione `crawl_and_classify` verrà usata automaticamente.
 - In assenza del modulo esterno, è attivo un **fallback** integrato (httpx+bs4).
         """
