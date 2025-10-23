@@ -13,6 +13,7 @@ import math
 import asyncio
 from collections import deque
 from urllib.parse import urljoin, urlparse
+from typing import Optional, List, Dict, Any, Set
 
 import streamlit as st
 import pandas as pd
@@ -53,9 +54,9 @@ st.set_page_config(page_title=APP_TITLE, page_icon="🔎", layout="wide")
 # --------------------------------------------
 # Utilità
 # --------------------------------------------
-def _dep_missing():
+def _dep_missing() -> List[str]:
     """Ritorna lista di dipendenze mancanti per il fallback crawler."""
-    missing = []
+    missing: List[str] = []
     if httpx is None:
         missing.append("httpx")
     if BeautifulSoup is None:
@@ -75,7 +76,7 @@ def _is_pdf_url(url: str) -> bool:
     return u.endswith(".pdf") or "application/pdf" in u  # fallback rudimentale
 
 
-def _year_from_text(text: str, candidates=(2022, 2023, 2024, 2025)) -> int | None:
+def _year_from_text(text: str, candidates=(2022, 2023, 2024, 2025)) -> Optional[int]:
     try:
         s = str(text)
     except Exception:
@@ -86,7 +87,7 @@ def _year_from_text(text: str, candidates=(2022, 2023, 2024, 2025)) -> int | Non
     return None
 
 
-def _norm_allowlist(seed_url: str, allowlist: list[str] | None) -> list[str]:
+def _norm_allowlist(seed_url: str, allowlist: Optional[List[str]]) -> List[str]:
     if allowlist:
         return [h.strip().lower() for h in allowlist if h.strip()]
     # default: usa il dominio della seed
@@ -94,7 +95,7 @@ def _norm_allowlist(seed_url: str, allowlist: list[str] | None) -> list[str]:
     return [base] if base else []
 
 
-def _is_allowed(url: str, allowlist: list[str]) -> bool:
+def _is_allowed(url: str, allowlist: List[str]) -> bool:
     host = _netloc(url).lower()
     if not host:
         return False
@@ -106,7 +107,7 @@ def _is_allowed(url: str, allowlist: list[str]) -> bool:
     return False
 
 
-def _score_candidate(url: str, title: str | None, keywords: list[str], year: int | None) -> float:
+def _score_candidate(url: str, title: Optional[str], keywords: List[str], year: Optional[int]) -> float:
     """Semplice scoring basato su URL+title."""
     score = 0.0
     u = (url or "").lower()
@@ -143,12 +144,12 @@ def _score_candidate(url: str, title: str | None, keywords: list[str], year: int
 # --------------------------------------------
 def _fallback_crawl_and_classify(
     seed_url: str,
-    keywords: list[str],
+    keywords: List[str],
     year: int,
     depth: int = 2,
     max_pages: int = 80,
-    allowlist: list[str] | None = None,
-) -> list[dict]:
+    allowlist: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """
     Crawler sincrono semplice (httpx + bs4).
     Ritorna lista di dict:
@@ -170,8 +171,8 @@ def _fallback_crawl_and_classify(
         )
 
     headers = {"User-Agent": DEFAULT_UA, "Accept": "*/*"}
-    results: list[dict] = []
-    visited: set[str] = set()
+    results: List[Dict[str, Any]] = []
+    visited: Set[str] = set()
     q = deque([(seed_url, 0, None)])  # (url, depth, source)
     pages_processed = 0
 
@@ -268,7 +269,7 @@ def _fallback_crawl_and_classify(
                     q.append((nxt, d + 1, url))
 
     # Deduplica per URL, tieni il migliore score
-    best_by_url: dict[str, dict] = {}
+    best_by_url: Dict[str, Dict[str, Any]] = {}
     for rec in results:
         u = rec["url"]
         prev = best_by_url.get(u)
@@ -286,12 +287,12 @@ def _fallback_crawl_and_classify(
 # --------------------------------------------
 def crawl_and_classify(
     seed_url: str,
-    keywords: list[str],
+    keywords: List[str],
     year: int,
     depth: int = 2,
     max_pages: int = 80,
-    allowlist: list[str] | None = None,
-) -> list[dict]:
+    allowlist: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """Usa il modulo esterno se disponibile, altrimenti il fallback."""
     if _CRAWLER_IMPORTED:
         return _external_crawl_and_classify(
