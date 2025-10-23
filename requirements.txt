@@ -2,7 +2,7 @@
 # requirements.txt (CLOUD-SAFE)
 # ===============================
 
-# Streamlit - una sola riga, niente duplicati
+# Streamlit
 streamlit==1.38.0
 
 # Data handling
@@ -13,7 +13,6 @@ openpyxl>=3.1.5
 httpx[http2]==0.27.2
 beautifulsoup4==4.12.3
 lxml==5.3.0
-selectolax==0.3.21
 urllib3==2.2.3
 idna==3.7
 chardet==5.2.0
@@ -22,7 +21,6 @@ tqdm==4.66.4
 tenacity==8.5.0
 
 # PDF & imaging
-PyMuPDF==1.24.9
 Pillow>=10.4.0
 
 # PDF text extraction and OCR (required by app.py)
@@ -35,5 +33,5 @@ pytesseract>=0.3.10
 pydantic>=2.8.0
 rapidfuzz>=3.9.0
 
-# Opzionale: requests (se lo usi davvero; altrimenti affidati solo ad httpx)
+# Optional HTTP lib
 requests>=2.32.3
