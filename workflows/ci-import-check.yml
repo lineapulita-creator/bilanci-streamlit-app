@@ -1,0 +1,45 @@
+# permalink: https://github.com/lineapulita-creator/bilanci-streamlit-app/blob/main/.github/workflows/ci-import-check.yml
+name: CI — import check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  import-check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.10]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            python -m pip install --upgrade pip
+            python -m pip install -r requirements.txt
+          else
+            python -m pip install --upgrade pip
+            python -m pip install streamlit pandas httpx beautifulsoup4
+          fi
+
+      - name: Import app (sanity check)
+        run: |
+          python - <<'PY'
+import importlib, sys
+try:
+    importlib.import_module('app')
+    print("OK: import succeeded")
+except Exception as e:
+    print("ERROR: import failed:", e)
+    raise
+PY
