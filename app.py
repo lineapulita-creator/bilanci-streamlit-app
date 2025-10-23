@@ -10,7 +10,7 @@ import time
 import math
 import json
 from collections import deque
-from typing import Optional, List, Dict, Any, Set
+from typing import Optional, List, Dict, Any, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
 import streamlit as st
@@ -46,6 +46,17 @@ try:
 except Exception:
     PdfReader = None
 
+# OCR libs (optional)
+try:
+    import pytesseract
+except Exception:
+    pytesseract = None
+
+try:
+    from pdf2image import convert_from_bytes
+except Exception:
+    convert_from_bytes = None
+
 # toml config read: try built-in/more common libs
 try:
     import tomllib  # py3.11+
@@ -62,7 +73,7 @@ from urllib import robotparser
 # Config generale
 # --------------------------------------------
 APP_TITLE = "Bilanci & DNF – Crawler semantico (Estra)"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 # User-Agent chiaro e con riferimento di contatto (aiuta a non essere bloccati)
 DEFAULT_UA = (
     "BilanciCrawler/1.0 (+https://github.com/lineapulita-creator) "
@@ -103,7 +114,6 @@ def load_search_config() -> Dict[str, str]:
                 cfg["api_key"] = data.get("google_api.key") or data.get("google_api_key") or data.get("api_key") or data.get("key")
                 cfg["cx"] = data.get("google_api.cx") or data.get("google_cx") or data.get("cx")
         except Exception:
-            # fallback empty
             cfg = {}
     return cfg
 
@@ -131,7 +141,7 @@ def search_google_cse(query: str, api_key: str, cx: str, num: int = 5, timeout: 
 
 
 # --------------------------------------------
-# Helpers per pdf: download e estrazione testo
+# Helpers per pdf: download e estrazione testo (include OCR)
 # --------------------------------------------
 def download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
     if httpx is None:
@@ -146,11 +156,33 @@ def download_binary(url: str, timeout: float = 30.0) -> Optional[bytes]:
     return None
 
 
-def extract_text_from_pdf_bytes(data: bytes) -> (str, bool):
+def ocr_pdf_bytes(data: bytes, dpi: int = 200, lang: str = "ita") -> str:
+    """
+    Converte le pagine PDF in immagini (pdf2image) e esegue pytesseract OCR.
+    Restituisce il testo concatenato. Richiede poppler (system) e tesseract disponibile.
+    """
+    if convert_from_bytes is None or pytesseract is None:
+        return ""
+    texts = []
+    try:
+        images = convert_from_bytes(data, dpi=dpi)
+    except Exception:
+        return ""
+    for img in images:
+        try:
+            text = pytesseract.image_to_string(img, lang=lang)
+            texts.append(text or "")
+        except Exception:
+            texts.append("")
+    return "\n".join(texts)
+
+
+def extract_text_from_pdf_bytes(data: bytes) -> Tuple[str, bool]:
     """
     Ritorna (text, needs_ocr_bool).
     Usa pdfplumber se disponibile, altrimenti PyPDF2 come fallback.
     Se non riesce a estrarre testo restituisce ('', True).
+    Se OCR possibile, caller può usare ocr_pdf_bytes.
     """
     if not data:
         return "", False
@@ -202,30 +234,22 @@ def normalize_number_str(s: str) -> str:
     s = s.replace(" ", "")
     # If contains both comma and dot, guess thousand separator
     if "," in s and "." in s:
-        # assume dot thousand sep and comma decimal OR viceversa: heuristic
         if s.rfind(",") > s.rfind("."):
             s = s.replace(".", "")
             s = s.replace(",", ".")
         else:
             s = s.replace(",", "")
     else:
-        # standardize comma to dot for decimal
         s = s.replace(",", ".")
-    # remove currency symbols
     s = re.sub(r"[^\d\.\-+]", "", s)
     return s
 
 def find_value_near_keywords(text: str, keywords: List[str]) -> (Optional[str], Optional[str]):
-    """
-    Cerca ciascuna keyword in text; per la prima occorrenza, prende una finestra intorno e cerca NUMBER_RE.
-    Restituisce (matched_keyword, normalized_number_str) oppure (None, None)
-    """
     txt_low = text.lower()
     for kw in keywords:
         kw_l = kw.lower()
         idx = txt_low.find(kw_l)
         if idx >= 0:
-            # window around keyword
             start = max(0, idx - 300)
             end = min(len(text), idx + len(kw_l) + 300)
             window = text[start:end]
@@ -235,7 +259,6 @@ def find_value_near_keywords(text: str, keywords: List[str]) -> (Optional[str], 
                 norm = normalize_number_str(raw)
                 return kw, norm
             else:
-                # if no number near, maybe number is on next lines: expand window further
                 start = max(0, idx - 800)
                 end = min(len(text), idx + len(kw_l) + 800)
                 window = text[start:end]
@@ -248,7 +271,7 @@ def find_value_near_keywords(text: str, keywords: List[str]) -> (Optional[str], 
 
 
 # --------------------------------------------
-# Politeness + robots helpers (usati dal fallback crawler)
+# Politeness + robots helpers
 # --------------------------------------------
 _robot_parsers: Dict[str, Optional[robotparser.RobotFileParser]] = {}
 _last_request_time: Dict[str, float] = {}
@@ -294,14 +317,52 @@ def polite_get(client: "httpx.Client", url: str, min_delay: float = 0.8) -> "htt
 
 
 # --------------------------------------------
-# _fallback_crawl_and_classify (aggiornato è già presente in file originario)
-# (Per brevità non riscrivo ogni riga: useremo la funzione definita in repo)
+# Adapter / Fallback crawler (semplificato)
 # --------------------------------------------
+def _is_pdf_url(url: str) -> bool:
+    u = url.lower()
+    return u.endswith(".pdf") or "application/pdf" in u
 
-# Se il modulo esterno è presente, l'Adapter lo userà; altrimenti usa il fallback che hai già.
-# Per evitare duplicazioni, assumiamo che la versione fallback sia già definita sotto lo stesso nome
-# nel file originale; qui riusiamo il nome crawl_and_classify (definito più avanti nella versione completa).
-# Per sicurezza, dichiariamo l'adapter con parametri di polite_mode/min_delay.
+def _year_from_text(text: str, candidates=(2022, 2023, 2024, 2025)) -> Optional[int]:
+    try:
+        s = str(text)
+    except Exception:
+        return None
+    for y in candidates:
+        if str(y) in s:
+            return y
+    return None
+
+def _score_candidate(url: str, title: Optional[str], keywords: List[str], year: Optional[int]) -> float:
+    score = 0.0
+    u = (url or "").lower()
+    t = (title or "").lower()
+    if year and str(year) in u:
+        score += 1.2
+    if year and str(year) in t:
+        score += 0.8
+    for kw in keywords:
+        kw_l = kw.lower()
+        if kw_l and kw_l in u:
+            score += 0.6
+        if kw_l and kw_l in t:
+            score += 0.4
+    boost_terms = ("bilanci", "relazioni", "investor", "financial", "sostenibilit")
+    if any(bt in u for bt in boost_terms):
+        score += 0.5
+    if _is_pdf_url(u):
+        score += 0.4
+    return round(score, 3)
+
+def _is_allowed(url: str, allowlist: List[str]) -> bool:
+    host = _get_host(url).lower()
+    if not host:
+        return False
+    for item in allowlist:
+        item = item.lower()
+        if host == item or host.endswith("." + item):
+            return True
+    return False
 
 def crawl_and_classify(
     seed_url: str,
@@ -313,8 +374,6 @@ def crawl_and_classify(
     polite_mode: bool = True,
     min_delay: float = 1.0,
 ) -> List[Dict[str, Any]]:
-    """Usa il modulo esterno se disponibile, altrimenti il fallback."""
-    # Se esterno accetta parametri extra tentiamo di passarli (gestito nel modulo esterno)
     if _CRAWLER_IMPORTED:
         try:
             return _external_crawl_and_classify(
@@ -336,9 +395,6 @@ def crawl_and_classify(
                 max_pages=max_pages,
                 allowlist=allowlist,
             )
-    # Fallback: reuse the gentle logic you merged previously by calling a local helper
-    # We'll implement a simple in-place crawler here calling polite_get and allowed_by_robots,
-    # but to avoid duplicating too much code from before, we'll use a minimal approach:
     results: List[Dict[str, Any]] = []
     if httpx is None or BeautifulSoup is None:
         return results
@@ -347,7 +403,7 @@ def crawl_and_classify(
     visited: Set[str] = set()
     q = deque([(seed_url, 0, None)])  # (url, depth, source)
     pages_processed = 0
-    allow = allowlist or [ _get_host(seed_url).lower() ] if seed_url else []
+    allow = allowlist or [_get_host(seed_url).lower()] if seed_url else []
     with httpx.Client(follow_redirects=True, headers=headers, timeout=15.0) as client:
         global _last_request_time
         _last_request_time = {}
@@ -356,7 +412,6 @@ def crawl_and_classify(
             if url in visited:
                 continue
             visited.add(url)
-            # host filtering
             if not _is_allowed(url, [h.lower() for h in allow]):
                 continue
             if polite_mode and not allowed_by_robots(url, DEFAULT_UA):
@@ -369,7 +424,6 @@ def crawl_and_classify(
             except Exception:
                 continue
             ctype = r.headers.get("content-type", "").lower()
-            # pdf direct
             if _is_pdf_url(url) or "application/pdf" in ctype:
                 title = url.split("/")[-1]
                 ydet = _year_from_text(url) or _year_from_text(title)
@@ -411,7 +465,6 @@ def crawl_and_classify(
                     "matched_keywords": matched,
                     "source_page": source,
                 })
-            # extract links
             for a in soup.find_all("a", href=True):
                 href = a.get("href")
                 try:
@@ -430,7 +483,6 @@ def crawl_and_classify(
                     continue
                 if d < depth:
                     q.append((nxt, d + 1, url))
-    # deduplicate, keep best score
     best_by_url: Dict[str, Dict[str, Any]] = {}
     for rec in results:
         u = rec["url"]
@@ -462,6 +514,9 @@ with st.sidebar:
         missing.append("beautifulsoup4")
     if pdfplumber is None and PdfReader is None:
         missing.append("pdfplumber or PyPDF2 for PDF text extraction")
+    if pytesseract is None or convert_from_bytes is None:
+        # OCR libs optional: inform user if not installed
+        missing.append("pytesseract and pdf2image (for OCR) - requires system packages")
     if missing:
         st.error("Mancano dipendenze: **" + ", ".join(missing) + "**")
 
@@ -470,7 +525,7 @@ with st.sidebar:
 
 
 # ==============================
-# 🔎 CRAWLER SEMANTICO – ESTRA (interfaccia principale)
+# 🔎 CRAWLER SEMANTICO – ESTRA (scan singolo)
 # ==============================
 with st.expander("🔎 Crawler semantico – Estra (scan singolo)", expanded=False):
     st.markdown("Configura i parametri e lancia la scansione per *Bilanci e DNF*.")
@@ -563,16 +618,13 @@ with st.expander("🔎 Crawler semantico – Estra (scan singolo)", expanded=Fal
 
 
 # ==============================
-# Batch processing: Excel -> ricerca automatica -> estrazione valori
+# Batch processing: Excel -> ricerca automatica -> estrazione valori (con OCR)
 # ==============================
 with st.expander("📁 Batch: carica Excel e processa elenco aziende", expanded=True):
     st.markdown(
         """
 Carica un file Excel (.xlsx) con una colonna che contiene il NOME azienda (colonna chiamata idealmente 'name' o 'azienda').
 Per ogni riga: il sistema esegue una query Google Custom Search del tipo `Nome Azienda bilancio <anno>` e cerca il PDF rilevante, quindi estrae il valore vicino alla keyword indicata.
-Note sui limiti:
-- Google Custom Search ha quota (es. 100 query/giorno) → controlla il file streamlit/config.toml e rispetta la quota.
-- Il processo può essere lento (ogni azienda può richiedere parecchie richieste).
 """
     )
 
@@ -655,7 +707,6 @@ Note sui limiti:
             else:
                 notes = "No Google API key; nessuna ricerca SERP automatica eseguita."
 
-            # fallback: se SERP vuota, prova a comporre search-url generico (non affidabile)
             candidate_urls = []
             for it in serp_items:
                 link = it.get("link")
@@ -677,16 +728,14 @@ Note sui limiti:
                         polite_mode=polite_mode_batch,
                         min_delay=min_delay_batch,
                     )
-                except Exception as e:
+                except Exception:
                     results = []
-                # cerca i pdf risultati
                 for r in results:
                     if r.get("is_pdf"):
                         score = r.get("score", 0.0)
                         if score > best_doc_score:
                             best_doc_score = score
                             best_doc_url = r.get("url")
-                # se trova un URL pdf nel results, break (ma continuiamo per eventualmente trovare migliore)
                 if best_doc_url:
                     found = True
 
@@ -698,12 +747,22 @@ Note sui limiti:
                         found = True
                         break
 
-            # 4) Se trovato documento PDF, scarica ed estrai testo
+            # 4) Se trovato documento PDF, scarica ed estrai testo (con fallback OCR)
             if best_doc_url:
                 status_text.info(f"  -> scarico documento {best_doc_url}")
                 data = download_binary(best_doc_url)
                 if data:
                     text, needs_ocr_flag = extract_text_from_pdf_bytes(data)
+                    # se non estrae testo, prova OCR se possibile
+                    if needs_ocr_flag and pytesseract is not None and convert_from_bytes is not None:
+                        status_text.info("  -> OCR in corso (pytesseract)...")
+                        try:
+                            ocr_text = ocr_pdf_bytes(data, dpi=200, lang="ita")
+                            if ocr_text and ocr_text.strip():
+                                text = ocr_text
+                                needs_ocr_flag = False
+                        except Exception:
+                            pass
                     if not needs_ocr_flag and text:
                         kw, val = find_value_near_keywords(text, extract_keywords)
                         matched_keyword = kw
@@ -712,7 +771,8 @@ Note sui limiti:
                             notes = "Nessuna keyword trovata nel testo"
                     else:
                         needs_ocr_flag = True
-                        notes = "Documento probabilmente scannerizzato o testo non estraibile (needs OCR)"
+                        if not notes:
+                            notes = "Documento probabilmente scannerizzato o testo non estraibile (needs OCR)"
                 else:
                     notes = "Download documento fallito"
             else:
@@ -740,7 +800,6 @@ Note sui limiti:
         except Exception as e:
             st.error(f"Errore generazione Excel: {e}")
 
-        # Mostra riepilogo query usate
         st.info(f"Query SERP effettuate in questo run: {queries_used} (quota giornaliera da monitorare!)")
 
 
@@ -750,9 +809,9 @@ Note sui limiti:
 with st.expander("ℹ️ Informazioni / Note"):
     st.markdown(
         """
-- Questa app utilizza Google Custom Search API per ottenere i primi link SERP; assicurati di avere inserito la API key e CX in streamlit/config.toml.
-- Per PDF testuali viene usato pdfplumber o PyPDF2 per estrarre testo; per PDF scannerizzati è necessario OCR (pytesseract o servizio cloud).
+- Questa app utilizza Google Custom Search API per ottenere i primi link SERP; assicurati di avere inserito la API key e CX in streamlit/config.toml o nei Secrets di Streamlit.
+- Per PDF testuali viene usato pdfplumber o PyPDF2 per estrarre testo; per PDF scannerizzati viene usato pytesseract+pdf2image (OCR). OCR richiede pacchetti di sistema: `tesseract-ocr` e `poppler-utils`.
 - Mantieni la Modalità Gentile attiva per evitare blocchi (robots.txt e delay).
-- Se vuoi aumentare automazione e accuratezza (ricerche più profonde, render JS, semantic matching), posso aggiungere integrazioni (Playwright, embeddings).
+- Per grandi volumi considera caching delle SERP e esecuzione in batch più piccoli.
         """
     )
